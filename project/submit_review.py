@@ -1,14 +1,17 @@
 import streamlit as st
-
-# ✅ Page config - must be first Streamlit command
-st.set_page_config(page_title="Submit Review", page_icon="📝")
-
 import pandas as pd
 import os
 import uuid
 from langchain_together import TogetherEmbeddings
 from pinecone import Pinecone
 from datetime import datetime
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from textblob import TextBlob  # Sentiment analysis
+
+# ✅ Page config - must be first Streamlit command
+st.set_page_config(page_title="Submit Review", page_icon="📝")
 
 # ✅ Set API Keys (for production, move to environment variables)
 os.environ["TOGETHER_API_KEY"] = "4b35bf117de47f85e287445a758437a052494b4235ab5f7c28c9182e9ef4e06b"
@@ -33,12 +36,46 @@ else:
         "review_date", "review_date_numeric", "stay_status"
     ])
 
+# Ensure the 'display_id' column exists
+if "display_id" not in df.columns:
+    df["display_id"] = pd.Series([], dtype=int)
+
 # ✅ Function to get next display_id (sequential 5-digit)
 def get_next_display_id():
-    if df.empty:
+    if df.empty or df["display_id"].isnull().all():
         return 10001  # Start from 10001
     else:
         return int(df["display_id"].max()) + 1
+
+# Function to send email notification
+def send_email(subject, body, to_email):
+    from_email = "rishikumar45628@gmail.com"
+    from_password = "ajyt zwtd vtmz wamx"  # Use app-specific password if using Gmail
+    smtp_server = "smtp.gmail.com"
+    smtp_port = 587
+
+    msg = MIMEMultipart()
+    msg["From"] = from_email
+    msg["To"] = to_email
+    msg["Subject"] = subject
+
+    msg.attach(MIMEText(body, "plain"))
+
+    try:
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()  # Encrypt the connection
+            server.login(from_email, from_password)
+            server.sendmail(from_email, to_email, msg.as_string())
+        print("Email sent successfully.")
+    except Exception as e:
+        print(f"Error sending email: {e}")
+
+# Function to analyze sentiment of the review
+def analyze_sentiment(review_text):
+    # Use TextBlob to analyze sentiment: Returns polarity (-1 = negative, 1 = positive)
+    blob = TextBlob(review_text)
+    polarity = blob.sentiment.polarity
+    return polarity
 
 # ✅ Streamlit App Title
 st.title("📝 Submit Your Hotel Review")
@@ -81,7 +118,7 @@ if submitted:
             "Review": review_text,
             "review_date": review_date.strftime("%Y-%m-%d"),
             "review_date_numeric": review_date_numeric,
-            "stay_status": stay_status  # ✅ Add stay status
+            "stay_status": stay_status
         }
 
         # ✅ Save to DataFrame and Excel
@@ -95,22 +132,37 @@ if submitted:
         with st.spinner("🔗 Uploading review to vector database..."):
             review_embedding = embeddings.embed_query(review_text)
 
-            index.upsert(vectors=[
-                (
-                    new_review_id,
-                    review_embedding,
-                    {
-                        "review_id": new_review_id,
-                        "display_id": new_display_id,
-                        "customer_id": customer_id,
-                        "Rating": rating,
-                        "review_date": review_date_numeric,
-                        "stay_status": stay_status  # ✅ Add stay status to Pinecone metadata
-                    }
-                )
-            ])
+            index.upsert(vectors=[(
+                new_review_id,
+                review_embedding,
+                {
+                    "review_id": new_review_id,
+                    "display_id": new_display_id,
+                    "customer_id": customer_id,
+                    "Rating": rating,
+                    "review_date": review_date_numeric,
+                    "stay_status": stay_status
+                }
+            )])
 
         st.success("✅ Review successfully added to Pinecone Vector Database!")
+
+        # ✅ Analyze sentiment of the review
+        sentiment_polarity = analyze_sentiment(review_text)
+
+        # ✅ If sentiment is negative (polarity < 0), send email
+        if sentiment_polarity < 0:
+            email_subject = "Negative Review Alert"
+            email_body = (
+                f"A negative review has been submitted by Customer ID: {customer_id}.\n\n"
+                f"Rating: {rating}\n"
+                f"Review: {review_text}\n\n"
+                f"Stay Status: {stay_status}\n"
+                f"Review Date: {review_date.strftime('%Y-%m-%d')}\n\n"
+                f"Please review and take appropriate action."
+            )
+            manager_email = "rishikumard916@gmail.com"  # Replace with actual manager's email
+            send_email(email_subject, email_body, manager_email)
 
 # ✅ Footer
 st.markdown("---")
